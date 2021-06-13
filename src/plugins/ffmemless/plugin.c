@@ -40,11 +40,13 @@
 #define FFM_SOUND_REPEAT_KEY	"sound.repeat"
 #define FFM_MAX_PARAM_LEN	80
 
-#define NGF_DEFAULT_TYPE	FF_RUMBLE
 #define NGF_DEFAULT_DURATION	240
 #define NGF_DEFAULT_DELAY	0
+// rumble
 #define NGF_DEFAULT_RMAGNITUDE	27000
 #define NGF_DEFAULT_PMAGNITUDE	14000
+// constant
+#define NGF_DEFAULT_LEVEL 0x5FFF
 
 N_PLUGIN_NAME(FFM_PLUGIN_NAME)
 N_PLUGIN_DESCRIPTION("Vibra plugin using ff-memless kernel backend")
@@ -64,6 +66,7 @@ static struct ffm_data {
 	const NProplist *ngfd_props;
 	NProplist *sys_props;
 	GHashTable	*effects;
+	unsigned long features[4];
 } ffm;
 
 static int ffm_setup_device(const NProplist *props, int *dev_fd)
@@ -77,7 +80,7 @@ static int ffm_setup_device(const NProplist *props, int *dev_fd)
 	} else {
 		N_DEBUG (LOG_CAT "%s found with value \"%s\"",
 					FFM_DEVFILE_KEY, device_file);
-		*dev_fd = ffmemless_evdev_file_open(device_file);
+		*dev_fd = ffmemless_evdev_file_open(device_file, ffm.features);
 		/* do a fall back to automatic search, in case open fails */
 		if (*dev_fd == -1) {
 			N_DEBUG (LOG_CAT "%s is not a valid event device",
@@ -250,10 +253,19 @@ static int ffm_setup_default_effect(GHashTable *effects, int dev_fd)
 		ff.id = data->id;
 	}
 
-	ff.type = FF_RUMBLE;
-	ff.replay.length = NGF_DEFAULT_DURATION;
-	ff.u.rumble.strong_magnitude = NGF_DEFAULT_RMAGNITUDE;
-	ff.u.rumble.weak_magnitude = NGF_DEFAULT_RMAGNITUDE;
+	if (FF_test_bit(FF_CONSTANT, ffm.features)) {
+		N_DEBUG (LOG_CAT "Using constant default effect, rumble is %d", 
+			(FF_test_bit(FF_CONSTANT, ffm.features)));
+		ff.type = FF_CONSTANT;
+		ff.replay.length = NGF_DEFAULT_DURATION;
+		ff.u.constant.level = NGF_DEFAULT_LEVEL;
+	} else {
+		N_DEBUG (LOG_CAT "Using rumble default effect");
+		ff.type = FF_RUMBLE;
+		ff.replay.length = NGF_DEFAULT_DURATION;
+		ff.u.rumble.strong_magnitude = NGF_DEFAULT_RMAGNITUDE;
+		ff.u.rumble.weak_magnitude = NGF_DEFAULT_RMAGNITUDE;
+	}
 	if (ffmemless_upload_effect(&ff, dev_fd)) {
 		N_DEBUG (LOG_CAT "%s effect load failed", N_HAPTIC_EFFECT_DEFAULT);
 		return -1;
@@ -273,6 +285,8 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 	char *key;
 	struct ff_effect ff;
 	struct ffm_effect_data *data;
+	// We're using just an int to map to the array below.
+	__s16 custom_data[sizeof(int)/sizeof(__s16)] = { 0 };
 	GHashTableIter iter;
 
 	if(!effects || !props) {
@@ -307,6 +321,8 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			ff.type = FF_RUMBLE;
 		} else if (!strcmp(value, "periodic")) {
 			ff.type = FF_PERIODIC;
+		} else if (!strcmp(value, "constant")) {
+			ff.type = FF_CONSTANT;
 		} else {
 			N_WARNING (LOG_CAT "unknown effect type %s", value);
 			continue;
@@ -362,6 +378,30 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			/* Usually no separate weak motor, use same value */
 			ff.u.rumble.weak_magnitude =
 						ff.u.rumble.strong_magnitude;
+		} else if (ff.type == FF_CONSTANT) {
+
+			N_DEBUG (LOG_CAT "constant effect");
+			ff.type = FF_CONSTANT;
+
+			int level = ffm_get_int_value(props,
+				key, "_LEVEL", INT32_MIN, INT32_MAX);
+			ff.u.constant.level = level == INT32_MIN ? 0 : (__s16)level;
+
+			ff.u.constant.envelope.attack_length = ffm_get_int_value(
+				props, key, "_ATTACK",
+				0, UINT16_MAX);
+
+			ff.u.constant.envelope.attack_level = ffm_get_int_value(
+				props, key, "_ALEVEL",
+				0, UINT16_MAX);
+
+			ff.u.constant.envelope.fade_length = ffm_get_int_value(
+				props, key, "_FADE",
+				0, UINT16_MAX);
+
+			ff.u.constant.envelope.fade_level = ffm_get_int_value(
+				props, key, "_FLEVEL",
+				0, UINT16_MAX);
 
 		} else if (ff.type == FF_PERIODIC) {
 			N_DEBUG (LOG_CAT "periodic effect");
@@ -373,8 +413,18 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 				ff.u.periodic.waveform = FF_SQUARE;
 			else if (!g_strcmp0(value, "triangle"))
 				ff.u.periodic.waveform = FF_TRIANGLE;
+			else if (!g_strcmp0(value, "custom"))
+				ff.u.periodic.waveform = FF_CUSTOM;
 			else
 				ff.u.periodic.waveform = FF_SINE;
+
+			if (ff.u.periodic.waveform == FF_CUSTOM) {
+				int* custom = (void*)custom_data;
+				*custom = ffm_get_int_value(props,
+					key, "_CUSTOM", 0, UINT16_MAX);
+				ff.u.periodic.custom_data = custom_data;
+				ff.u.periodic.custom_len = sizeof(int)/sizeof(__s16);
+			}
 
 			ff.u.periodic.period = ffm_get_int_value(props,
 				key, "_PERIOD", 0, UINT16_MAX);
@@ -433,6 +483,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			"delay = %dms\n"
 			"strong rumble magn = 0x%x\n"
 			"weak rumble magn = 0x%x\n"
+			"const level = 0x%d\n"
 			"per_waveform = 0x%x\n"
 			"period = %dms\n"
 			"periodic magnitude = 0x%x\n"
@@ -442,11 +493,13 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			"att_lev = 0x%x\n"
 			"fade = %ums\n"
 			"fade_lev = 0x%x\n",
+			"custom_len = %d\n",
 			ff.type,
 			ff.replay.length,
 			ff.replay.delay,
 			ff.u.rumble.strong_magnitude,
 			ff.u.rumble.weak_magnitude,
+			ff.u.constant.level,
 			ff.u.periodic.waveform,
 			ff.u.periodic.period,
 			ff.u.periodic.magnitude,
@@ -455,7 +508,8 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			ff.u.periodic.envelope.attack_length,
 			ff.u.periodic.envelope.attack_level,
 			ff.u.periodic.envelope.fade_length,
-			ff.u.periodic.envelope.fade_level);
+			ff.u.periodic.envelope.fade_level,
+			ff.u.periodic.custom_len);
 	}
 
 	return 0;

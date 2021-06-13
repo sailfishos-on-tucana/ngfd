@@ -27,12 +27,6 @@
 #include <sys/ioctl.h>
 #include <linux/input.h>
 
-#define BITS_PER_LONG (sizeof(long) * 8)
-#define OFF(x)  ((x)%BITS_PER_LONG)
-#define BIT(x)  (1UL<<OFF(x))
-#define LONG(x) ((x)/BITS_PER_LONG)
-#define test_bit(bit, array)    ((array[LONG(bit)] >> OFF(bit)) & 1)
-
 int ffmemless_play(int effect_id, int device_file, int play)
 {
 	struct input_event event;
@@ -67,10 +61,9 @@ int ffmemless_erase_effect(int effect_id, int device_file)
 	}
 }
 
-int ffmemless_evdev_file_open(const char *file_name)
+int ffmemless_evdev_file_open(const char *file_name, unsigned long features[4])
 {
 	int result, fp;
-	unsigned long features[4];
 
 	fp = open(file_name, O_RDWR | O_CLOEXEC);
 
@@ -84,15 +77,7 @@ int ffmemless_evdev_file_open(const char *file_name)
 		close(fp);
 		return -1;
 	}
-	result = test_bit(FF_RUMBLE, features);
-	result = result && test_bit(FF_PERIODIC, features);
-	if (result) {
-		return fp;
-	} else {
-		close(fp);
-		errno = ENOTSUP;
-		return -1;
-	}
+	return fp;
 }
 
 int ffmemless_evdev_file_search(void)
@@ -118,8 +103,9 @@ int ffmemless_evdev_file_search(void)
 			i++;
 			continue;
 		}
-		result = test_bit(FF_RUMBLE, features);
-		result = result && test_bit(FF_PERIODIC, features);
+		result = FF_test_bit(FF_RUMBLE, features);
+		result = result || FF_test_bit(FF_CONSTANT, features);
+		result = result && FF_test_bit(FF_PERIODIC, features);
 		if (result)
 			return fp;
 

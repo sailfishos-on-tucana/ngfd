@@ -24,6 +24,12 @@
 #define FF_DIR_FORWARD	0x4000
 #define FF_DIR_REVERSE	0xC000
 
+#define FF_BITS_PER_LONG (sizeof(long) * 8)
+#define FF_OFF(x)  ((x)%FF_BITS_PER_LONG)
+#define FF_BIT(x)  (1UL<<FF_OFF(x))
+#define FF_LONG(x) ((x)/FF_BITS_PER_LONG)
+#define FF_test_bit(bit, array)    ((array[FF_LONG(bit)] >> FF_OFF(bit)) & 1)
+
 int ffmemless_play(int effect_id, int device_file, int play);
 int ffmemless_upload_effect(struct ff_effect *effect, int device_file);
 int ffmemless_erase_effect(int effect_id, int device_file);
@@ -35,17 +41,18 @@ int ffmemless_erase_effect(int effect_id, int device_file);
  * of force feedback effects and returns the file pointer if it does.
  *
  * @param device_file_name A pointer to file name. E.g. "/dev/input/event2"
+ * @param features An array of 4 longs to be tested with FF_test_bit for features.
  * @returns File descriptor on success, -1 on error.
  */
-int ffmemless_evdev_file_open(const char *device_file_name);
+int ffmemless_evdev_file_open(const char *device_file_name, unsigned long features[4]);
 
 /**
  * ffmemless_evdev_file_search - Search first device node with FF support.
  *
  * This function searches through /dev/input/event? files for first one that
- * supports FF_RUMBLE and FF_PRERIODIC type of force feedback effects. Once
- * a device node is found, the function returns a open file descriptor
- * to the device node.
+ * supports either FF_RUMBLE or FF_CONSTANT but also FF_PRERIODIC type of force
+ * feedback effects. Once a device node is found, the function returns a open file
+ * descriptor to the device node.
  *
  * @returns	File descriptor on success, -1 if no suitable device node found.
  */
