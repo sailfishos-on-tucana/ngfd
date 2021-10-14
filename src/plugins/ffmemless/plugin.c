@@ -676,6 +676,8 @@ static int ffm_sink_prepare(NSinkInterface *iface, NRequest *request)
 	/* creating copy of the data as we need to alter it for this event */
 	copy = g_new(struct ffm_effect_data, 1);
 	memcpy(copy, data, sizeof(struct ffm_effect_data));
+	copy->request = request;
+	copy->iface = iface;
 
 	repeat = n_proplist_get_bool (props, FFM_SOUND_REPEAT_KEY);
 	playback_time = n_proplist_get_uint (props, FFM_HAPTIC_DURATION_KEY);
