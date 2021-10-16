@@ -599,13 +599,14 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 
 		__s16 reported_playback_time = 0;
 		if (data->cached_effect.type == FF_PERIODIC && data->cached_effect.u.periodic.waveform == FF_CUSTOM) {
-			reported_playback_time = data->cached_effect.u.periodic.custom_data[1];
+			reported_playback_time = data->cached_effect.u.periodic.custom_data[1] * 1000 
+				+ data->cached_effect.u.periodic.custom_data[2];
 		}
-		N_DEBUG(LOG_CAT "Re-uploaded effect %d as %d reports back %d ms", data->id, data->cached_effect.id, reported_playback_time);
+		N_DEBUG(LOG_CAT "Re-uploaded effect %d as %d reports back %hd ms", data->id, data->cached_effect.id, reported_playback_time);
 		if (reported_playback_time) {
 			g_source_remove (data->poll_id);
-			N_DEBUG (LOG_CAT "setting up completion timer");
-			data->poll_id = g_timeout_add(data->playback_time + 20,
+			N_DEBUG (LOG_CAT "resetting up completion timer");
+			data->poll_id = g_timeout_add(reported_playback_time + 20,
 						ffm_playback_done, data);
 		}
 	}
