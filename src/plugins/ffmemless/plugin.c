@@ -51,7 +51,7 @@
 
 #define CACHE_EFFECTS
 // We're using just 8 bytes for the custom data, most drivers seem to require 6.
-#define CUSTOM_DATA_LEN 8
+#define CUSTOM_DATA_LEN 4
 
 N_PLUGIN_NAME(FFM_PLUGIN_NAME)
 N_PLUGIN_DESCRIPTION("Vibra plugin using ff-memless kernel backend")
@@ -76,6 +76,7 @@ static struct ffm_data {
 	GHashTable	*effects;
 	unsigned long features[4];
 	GPtrArray* custom_data_storage;
+	GQueue* effectIDs;
 } ffm;
 
 static int ffm_setup_device(const NProplist *props, int *dev_fd)
@@ -255,7 +256,7 @@ static int ffm_setup_default_effect(GHashTable *effects, int dev_fd)
 	if (!data) {
 		data = g_new0(struct ffm_effect_data, 1);
 		data->id = -1;
-		data->id = 1;
+		data->id = 1; // TODO why
 		ff.id = -1;
 		g_hash_table_insert(effects, g_strdup(N_HAPTIC_EFFECT_DEFAULT),
 				data);
@@ -305,7 +306,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 	char *key;
 	struct ff_effect ff;
 	struct ffm_effect_data *data;
-	void* custom_data;
+	__s16* custom_data;
 	GHashTableIter iter;
 
 	if(!effects || !props) {
@@ -438,11 +439,11 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 				ff.u.periodic.waveform = FF_SINE;
 
 			if (ff.u.periodic.waveform == FF_CUSTOM) {
-				custom_data = g_malloc0(CUSTOM_DATA_LEN);
+				custom_data = g_malloc0(CUSTOM_DATA_LEN * sizeof(__s16));
 				g_ptr_array_add(ffm.custom_data_storage, custom_data);
-				int* custom = custom_data;
-				*custom = ffm_get_int_value(props,
+				int custom = ffm_get_int_value(props,
 					key, "_CUSTOM", 0, UINT16_MAX);
+				custom_data[0] = (__s16)custom;
 				ff.u.periodic.custom_data = custom_data;
 				ff.u.periodic.custom_len = CUSTOM_DATA_LEN;
 			}
@@ -486,9 +487,6 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			continue;
 		}
 
-#ifdef CACHE_EFFECTS
-		memcpy(&data->cached_effect, &ff, sizeof(ff));
-#endif
 		/* Finally load the effect */
 		if (ffmemless_upload_effect(&ff, ffm.dev_file)) {
 			N_DEBUG (LOG_CAT "%s effect loading failed",
@@ -497,6 +495,10 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 		}
 		/* If the id was -1, kernel has updated it with valid value */
 		data->id = ff.id;
+#ifdef CACHE_EFFECTS
+		memcpy(&data->cached_effect, &ff, sizeof(ff));
+		g_queue_push_tail(ffm.effectIDs, (int)data->id);
+#endif
 		/* Calculate the playback time */
 		data->playback_time = data->repeat *
 					(ff.replay.delay + ff.replay.length);
@@ -548,6 +550,9 @@ gboolean ffm_playback_done(gpointer userdata)
 
 	N_DEBUG (LOG_CAT "Effect id %d completed", data->id);
 
+#ifdef CACHE_EFFECTS
+ 	g_queue_push_tail(ffm.effectIDs, data->cached_effect.id);
+#endif
 	data->poll_id = 0;
 	n_sink_interface_complete(data->iface, data->request);
 	return FALSE;
@@ -564,40 +569,65 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 			data->poll_id = g_timeout_add(data->playback_time + 20,
 						ffm_playback_done, data);
 		}
-		N_DEBUG (LOG_CAT "Starting playback");
+		N_DEBUG (LOG_CAT "Starting playback %d", data->id);
 	} else {
-		N_DEBUG (LOG_CAT "Stopping playback");
+		ffm_playback_done(data);
+		N_DEBUG (LOG_CAT "Stopping playback %d", data->id);
 	}
 
 #ifdef CACHE_EFFECTS
-	int result = TRUE;
-
 	if (play) {
+		// Remove two to play one.
+		if (ffm.effectIDs->length > 5) {
+			int removeId = g_queue_pop_head(ffm.effectIDs);
+			N_DEBUG (LOG_CAT "Removing old effect %d", removeId);
+			ffmemless_erase_effect(removeId, ffm.dev_file);
+			removeId = g_queue_pop_head(ffm.effectIDs);
+			N_DEBUG (LOG_CAT "Removing old effect %d", removeId);
+			ffmemless_erase_effect(removeId, ffm.dev_file);
+		}
+
 		data->cached_effect.id = -1;
 		if (ffmemless_upload_effect(&data->cached_effect, ffm.dev_file)) {
 			N_DEBUG (LOG_CAT "%d effect re-load failed", data->id);
-			result = FALSE;
-		} else {
-			data->id = data->cached_effect.id;
+			if (data->poll_id) {
+				g_source_remove (data->poll_id);
+				data->poll_id = 0;
+			}
+			return FALSE;
+		} 
+
+		__s16 reported_playback_time = 0;
+		if (data->cached_effect.type == FF_PERIODIC && data->cached_effect.u.periodic.waveform == FF_CUSTOM) {
+			reported_playback_time = data->cached_effect.u.periodic.custom_data[1];
+		}
+		N_DEBUG(LOG_CAT "Re-uploaded effect %d as %d reports back %d ms", data->id, data->cached_effect.id, reported_playback_time);
+		if (reported_playback_time) {
+			g_source_remove (data->poll_id);
+			N_DEBUG (LOG_CAT "setting up completion timer");
+			data->poll_id = g_timeout_add(data->playback_time + 20,
+						ffm_playback_done, data);
 		}
 	}
 
-	if (ffmemless_play(data->id, ffm.dev_file, play))
-		result = FALSE;
-
-	if (!play) {
-		if (ffmemless_erase_effect(data->cached_effect.id, ffm.dev_file))
-			result = FALSE;
-	}
-
-	return result;
-
+	if (ffmemless_play(data->cached_effect.id, ffm.dev_file, play))
+		return TRUE;
+	return TRUE;
 #else
 
 	if (ffmemless_play(data->id, ffm.dev_file, play))
 		return FALSE;
 	return TRUE;
 #endif
+}
+
+static void ffm_sink_shutdown(NSinkInterface *iface)
+{
+	(void) iface;
+	g_hash_table_destroy(ffm.effects);
+	g_ptr_array_free(ffm.custom_data_storage, TRUE);
+	g_queue_free(ffm.effectIDs);
+	ffm_close_device(ffm.dev_file);
 }
 
 static int ffm_sink_initialize(NSinkInterface *iface)
@@ -610,6 +640,7 @@ static int ffm_sink_initialize(NSinkInterface *iface)
 	}
 
 	ffm.custom_data_storage = g_ptr_array_new_with_free_func(g_free);
+	ffm.effectIDs = g_queue_new();
 
 	ffm.effects = ffm_new_effect_list(n_proplist_get_string(ffm.ngfd_props,
 							FFM_EFFECTLIST_KEY));
@@ -634,18 +665,9 @@ static int ffm_sink_initialize(NSinkInterface *iface)
 	return TRUE;
 
 ffm_init_error2:
-	g_hash_table_destroy(ffm.effects);
-	g_ptr_array_free(ffm.custom_data_storage, TRUE);
-	ffm_close_device(ffm.dev_file);
+	ffm_sink_shutdown(iface);
 ffm_init_error1:
 	return FALSE;
-}
-static void ffm_sink_shutdown(NSinkInterface *iface)
-{
-	(void) iface;
-	g_hash_table_destroy(ffm.effects);
-	g_ptr_array_free(ffm.custom_data_storage, TRUE);
-	ffm_close_device(ffm.dev_file);
 }
 
 static int ffm_sink_can_handle(NSinkInterface *iface, NRequest *request)
