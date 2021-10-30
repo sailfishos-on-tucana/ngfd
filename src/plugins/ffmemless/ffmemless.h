@@ -35,21 +35,22 @@ int ffmemless_erase_effect(int effect_id, int device_file);
  * of force feedback effects and returns the file pointer if it does.
  *
  * @param device_file_name A pointer to file name. E.g. "/dev/input/event2"
+ * @param features An array of 4 longs to be tested with FF_test_bit for features.
  * @returns File descriptor on success, -1 on error.
  */
-int ffmemless_evdev_file_open(const char *device_file_name);
+int ffmemless_evdev_file_open(const char *device_file_name, unsigned long features[4]);
 
 /**
  * ffmemless_evdev_file_search - Search first device node with FF support.
  *
  * This function searches through /dev/input/event? files for first one that
- * supports FF_RUMBLE and FF_PRERIODIC type of force feedback effects. Once
- * a device node is found, the function returns a open file descriptor
- * to the device node.
+ * supports either FF_RUMBLE or FF_CONSTANT but also FF_PRERIODIC type of force
+ * feedback effects. Once a device node is found, the function returns a open file
+ * descriptor to the device node.
  *
  * @returns	File descriptor on success, -1 if no suitable device node found.
  */
-int ffmemless_evdev_file_search(void);
+int ffmemless_evdev_file_search(unsigned long features[4]);
 
 /**
  * ffmemless_evdev_file_close - Close a event device node.
@@ -59,5 +60,7 @@ int ffmemless_evdev_file_search(void);
  * @returns 0 on success, -1 on error.
  */
 int ffmemless_evdev_file_close(int device_file);
+
+int ffmemless_has_feature(__u16 type, unsigned long features[4]);
 
 #endif

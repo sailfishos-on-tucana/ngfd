@@ -67,10 +67,9 @@ int ffmemless_erase_effect(int effect_id, int device_file)
 	}
 }
 
-int ffmemless_evdev_file_open(const char *file_name)
+int ffmemless_evdev_file_open(const char *file_name, unsigned long features[4])
 {
 	int result, fp;
-	unsigned long features[4];
 
 	fp = open(file_name, O_RDWR | O_CLOEXEC);
 
@@ -84,24 +83,15 @@ int ffmemless_evdev_file_open(const char *file_name)
 		close(fp);
 		return -1;
 	}
-	result = test_bit(FF_RUMBLE, features);
-	result = result && test_bit(FF_PERIODIC, features);
-	if (result) {
-		return fp;
-	} else {
-		close(fp);
-		errno = ENOTSUP;
-		return -1;
-	}
+	return fp;
 }
 
-int ffmemless_evdev_file_search(void)
+int ffmemless_evdev_file_search(unsigned long features[4])
 {
 	int result;
 	short i = 0;
 	int fp = 1;
 	char device_file_name[24];
-	unsigned long features[4];
 
 	/* fail safe stop at 256 devices */
 	while (fp && i < 256) {
@@ -119,6 +109,7 @@ int ffmemless_evdev_file_search(void)
 			continue;
 		}
 		result = test_bit(FF_RUMBLE, features);
+		result = result || test_bit(FF_CONSTANT, features);
 		result = result && test_bit(FF_PERIODIC, features);
 		if (result)
 			return fp;
@@ -132,4 +123,8 @@ int ffmemless_evdev_file_search(void)
 int ffmemless_evdev_file_close(int file)
 {
 	return close(file);
+}
+
+int ffmemless_has_feature(__u16 type, unsigned long features[4]) {
+	return test_bit(type, features);
 }

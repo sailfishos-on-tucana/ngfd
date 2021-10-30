@@ -41,11 +41,16 @@
 #define FFM_HAPTIC_DURATION_KEY	"haptic.duration"
 #define FFM_MAX_PARAM_LEN	80
 
-#define NGF_DEFAULT_TYPE	FF_RUMBLE
 #define NGF_DEFAULT_DURATION	240
 #define NGF_DEFAULT_DELAY	0
+// rumble
 #define NGF_DEFAULT_RMAGNITUDE	27000
 #define NGF_DEFAULT_PMAGNITUDE	14000
+// constant
+#define NGF_DEFAULT_LEVEL 0x5FFF
+
+#define CACHE_EFFECTS
+#define CUSTOM_DATA_LEN 3
 
 N_PLUGIN_NAME(FFM_PLUGIN_NAME)
 N_PLUGIN_DESCRIPTION("Vibra plugin using ff-memless kernel backend")
@@ -58,6 +63,10 @@ struct ffm_effect_data {
 	int repeat;
 	guint playback_time;
 	int poll_id;
+	int16_t customEffectId;
+#ifdef CACHE_EFFECTS
+	struct ff_effect cached_effect;
+#endif
 };
 
 static struct ffm_data {
@@ -65,6 +74,7 @@ static struct ffm_data {
 	const NProplist *ngfd_props;
 	NProplist *sys_props;
 	GHashTable	*effects;
+	unsigned long features[4];
 } ffm;
 
 static int ffm_setup_device(const NProplist *props, int *dev_fd)
@@ -74,17 +84,17 @@ static int ffm_setup_device(const NProplist *props, int *dev_fd)
 	if (device_file == NULL) {
 		N_DEBUG (LOG_CAT "No %s provided, using automatic detection",
 					FFM_DEVFILE_KEY);
-		*dev_fd = ffmemless_evdev_file_search();
+		*dev_fd = ffmemless_evdev_file_search(ffm.features);
 	} else {
 		N_DEBUG (LOG_CAT "%s found with value \"%s\"",
 					FFM_DEVFILE_KEY, device_file);
-		*dev_fd = ffmemless_evdev_file_open(device_file);
+		*dev_fd = ffmemless_evdev_file_open(device_file, ffm.features);
 		/* do a fall back to automatic search, in case open fails */
 		if (*dev_fd == -1) {
 			N_DEBUG (LOG_CAT "%s is not a valid event device",
 					device_file);
 			N_DEBUG (LOG_CAT "Falling back to automatic detection");
-			*dev_fd = ffmemless_evdev_file_search();
+			*dev_fd = ffmemless_evdev_file_search(ffm.features);
 		}
 	}
 	if (*dev_fd == -1) {
@@ -98,6 +108,7 @@ static int ffm_setup_device(const NProplist *props, int *dev_fd)
 static void ffm_close_device(int fd)
 {
 	ffmemless_evdev_file_close(fd);
+
 }
 
 /* Fetches string value from props with full key combined from prefix and key */
@@ -241,8 +252,7 @@ static int ffm_setup_default_effect(GHashTable *effects, int dev_fd)
 	data = (struct ffm_effect_data *)g_hash_table_lookup(effects,
 							N_HAPTIC_EFFECT_DEFAULT);
 	if (!data) {
-		data = g_new(struct ffm_effect_data, 1);
-		data->id = -1;
+		data = g_new0(struct ffm_effect_data, 1);
 		data->id = 1;
 		ff.id = -1;
 		g_hash_table_insert(effects, g_strdup(N_HAPTIC_EFFECT_DEFAULT),
@@ -251,15 +261,34 @@ static int ffm_setup_default_effect(GHashTable *effects, int dev_fd)
 		ff.id = data->id;
 	}
 
-	ff.type = FF_RUMBLE;
-	ff.replay.length = NGF_DEFAULT_DURATION;
-	ff.u.rumble.strong_magnitude = NGF_DEFAULT_RMAGNITUDE;
-	ff.u.rumble.weak_magnitude = NGF_DEFAULT_RMAGNITUDE;
+	N_DEBUG (LOG_CAT "Features array is %lx %lx %lx %lx", ffm.features[0],
+		ffm.features[1], ffm.features[2], ffm.features[3]);
+	// We test first for FF_CONSTANT because FF_RUMBLE may be falsely reported by
+	// input_ff_create if FF_PERIODIC is supported. However, there are some
+	// drivers which use FF_PERIODIC only with FF_CUSTOM waveform..
+	// https://github.com/torvalds/linux/blob/master/drivers/input/ff-core.c#L350
+	if (ffmemless_has_feature(FF_CONSTANT, ffm.features)) {
+		N_DEBUG (LOG_CAT "Using constant default effect, rumble is %d", 
+			(ffmemless_has_feature(FF_RUMBLE, ffm.features)));
+		ff.type = FF_CONSTANT;
+		ff.replay.length = NGF_DEFAULT_DURATION;
+		ff.u.constant.level = NGF_DEFAULT_LEVEL;
+	} else {
+		N_DEBUG (LOG_CAT "Using rumble default effect");
+		ff.type = FF_RUMBLE;
+		ff.replay.length = NGF_DEFAULT_DURATION;
+		ff.u.rumble.strong_magnitude = NGF_DEFAULT_RMAGNITUDE;
+		ff.u.rumble.weak_magnitude = NGF_DEFAULT_RMAGNITUDE;
+	}
+#ifdef CACHE_EFFECTS
+	memcpy(&data->cached_effect, &ff, sizeof(ff));
+#endif
 	if (ffmemless_upload_effect(&ff, dev_fd)) {
 		N_DEBUG (LOG_CAT "%s effect load failed", N_HAPTIC_EFFECT_DEFAULT);
 		return -1;
 	}
 	data->id = ff.id;
+
 	N_DEBUG (LOG_CAT "Added effect %s, id %d", N_HAPTIC_EFFECT_DEFAULT, ff.id);
 	return 0;
 }
@@ -308,6 +337,8 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			ff.type = FF_RUMBLE;
 		} else if (!strcmp(value, "periodic")) {
 			ff.type = FF_PERIODIC;
+		} else if (!strcmp(value, "constant")) {
+			ff.type = FF_CONSTANT;
 		} else {
 			N_WARNING (LOG_CAT "unknown effect type %s", value);
 			continue;
@@ -363,6 +394,29 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			/* Usually no separate weak motor, use same value */
 			ff.u.rumble.weak_magnitude =
 						ff.u.rumble.strong_magnitude;
+		} else if (ff.type == FF_CONSTANT) {
+			N_DEBUG (LOG_CAT "constant effect");
+			ff.type = FF_CONSTANT;
+
+			int level = ffm_get_int_value(props,
+				key, "_LEVEL", INT32_MIN, INT32_MAX);
+			ff.u.constant.level = level == INT32_MIN ? 0 : (__s16)level;
+
+			ff.u.constant.envelope.attack_length = ffm_get_int_value(
+				props, key, "_ATTACK",
+				0, UINT16_MAX);
+
+			ff.u.constant.envelope.attack_level = ffm_get_int_value(
+				props, key, "_ALEVEL",
+				0, UINT16_MAX);
+
+			ff.u.constant.envelope.fade_length = ffm_get_int_value(
+				props, key, "_FADE",
+				0, UINT16_MAX);
+
+			ff.u.constant.envelope.fade_level = ffm_get_int_value(
+				props, key, "_FLEVEL",
+				0, UINT16_MAX);
 
 		} else if (ff.type == FF_PERIODIC) {
 			N_DEBUG (LOG_CAT "periodic effect");
@@ -374,8 +428,18 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 				ff.u.periodic.waveform = FF_SQUARE;
 			else if (!g_strcmp0(value, "triangle"))
 				ff.u.periodic.waveform = FF_TRIANGLE;
+			else if (!g_strcmp0(value, "custom"))
+				ff.u.periodic.waveform = FF_CUSTOM;
 			else
 				ff.u.periodic.waveform = FF_SINE;
+
+			if (ff.u.periodic.waveform == FF_CUSTOM) {
+				data->customEffectId = ffm_get_int_value(props,
+					key, "_CUSTOM", 0, UINT16_MAX);
+				int16_t custom_data[CUSTOM_DATA_LEN] = {data->customEffectId};
+				ff.u.periodic.custom_data = custom_data;
+				ff.u.periodic.custom_len = CUSTOM_DATA_LEN;
+			}
 
 			ff.u.periodic.period = ffm_get_int_value(props,
 				key, "_PERIOD", 0, UINT16_MAX);
@@ -424,9 +488,20 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 		}
 		/* If the id was -1, kernel has updated it with valid value */
 		data->id = ff.id;
+#ifdef CACHE_EFFECTS
+		memcpy(&data->cached_effect, &ff, sizeof(ff));
+#endif
 		/* Calculate the playback time */
-		data->playback_time = data->repeat *
-					(ff.replay.delay + ff.replay.length);
+		if (ff.type == FF_PERIODIC && ff.u.periodic.waveform == FF_CUSTOM) {
+			data->playback_time = ff.u.periodic.custom_data[1] * 1000
+				+ ff.u.periodic.custom_data[2];
+			N_DEBUG(LOG_CAT "Custom effect %d reports back %hd ms playback time",
+				ff.id, data->playback_time);
+		} else {
+			data->playback_time = data->repeat *
+				(ff.replay.delay + ff.replay.length);
+		}
+
 		N_DEBUG (LOG_CAT "Created effect %s with id %d", key, data->id);
 		N_DEBUG (LOG_CAT "Parameters:\n"
 			"type = 0x%x\n"
@@ -434,6 +509,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			"delay = %dms\n"
 			"strong rumble magn = 0x%x\n"
 			"weak rumble magn = 0x%x\n"
+			"const level = 0x%d\n"
 			"per_waveform = 0x%x\n"
 			"period = %dms\n"
 			"periodic magnitude = 0x%x\n"
@@ -443,11 +519,13 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			"att_lev = 0x%x\n"
 			"fade = %ums\n"
 			"fade_lev = 0x%x\n",
+			"custom_len = %d\n",
 			ff.type,
 			ff.replay.length,
 			ff.replay.delay,
 			ff.u.rumble.strong_magnitude,
 			ff.u.rumble.weak_magnitude,
+			ff.u.constant.level,
 			ff.u.periodic.waveform,
 			ff.u.periodic.period,
 			ff.u.periodic.magnitude,
@@ -456,11 +534,11 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			ff.u.periodic.envelope.attack_length,
 			ff.u.periodic.envelope.attack_level,
 			ff.u.periodic.envelope.fade_length,
-			ff.u.periodic.envelope.fade_level);
+			ff.u.periodic.envelope.fade_level,
+			ff.u.periodic.custom_len);
 	}
 
 	return 0;
-
 ffm_eff_error1:
 	g_hash_table_destroy(ffm.effects);
 	return -1;
@@ -472,6 +550,9 @@ gboolean ffm_playback_done(gpointer userdata)
 
 	N_DEBUG (LOG_CAT "Effect id %d completed", data->id);
 
+#ifdef CACHE_EFFECTS
+	ffmemless_erase_effect(data->cached_effect.id, ffm.dev_file);
+#endif
 	data->poll_id = 0;
 	n_sink_interface_complete(data->iface, data->request);
 	return FALSE;
@@ -488,15 +569,45 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 			data->poll_id = g_timeout_add(data->playback_time + 20,
 						ffm_playback_done, data);
 		}
-		N_DEBUG (LOG_CAT "Starting playback");
+		N_DEBUG (LOG_CAT "Starting playback %d", data->id);
 	} else {
-		N_DEBUG (LOG_CAT "Stopping playback");
+		ffm_playback_done(data);
+		N_DEBUG (LOG_CAT "Stopping playback %d", data->id);
 	}
+
+#ifdef CACHE_EFFECTS
+	if (play) {
+		data->cached_effect.id = -1;
+		if (data->cached_effect.type == FF_PERIODIC) {
+			int16_t custom_data[CUSTOM_DATA_LEN] = {data->customEffectId};
+			data->cached_effect.u.periodic.custom_data = custom_data;
+		}
+		if (ffmemless_upload_effect(&data->cached_effect, ffm.dev_file)) {
+			N_DEBUG (LOG_CAT "%d effect re-load failed", data->id);
+			if (data->poll_id) {
+				g_source_remove (data->poll_id);
+				data->poll_id = 0;
+			}
+			return FALSE;
+		} 
+	}
+
+	if (ffmemless_play(data->cached_effect.id, ffm.dev_file, play))
+		return FALSE;
+	return TRUE;
+#else
 
 	if (ffmemless_play(data->id, ffm.dev_file, play))
 		return FALSE;
-
 	return TRUE;
+#endif
+}
+
+static void ffm_sink_shutdown(NSinkInterface *iface)
+{
+	(void) iface;
+	g_hash_table_destroy(ffm.effects);
+	ffm_close_device(ffm.dev_file);
 }
 
 static int ffm_sink_initialize(NSinkInterface *iface)
@@ -531,16 +642,9 @@ static int ffm_sink_initialize(NSinkInterface *iface)
 	return TRUE;
 
 ffm_init_error2:
-	g_hash_table_destroy(ffm.effects);
-	ffm_close_device(ffm.dev_file);
+	ffm_sink_shutdown(iface);
 ffm_init_error1:
 	return FALSE;
-}
-static void ffm_sink_shutdown(NSinkInterface *iface)
-{
-	(void) iface;
-	g_hash_table_destroy(ffm.effects);
-	ffm_close_device(ffm.dev_file);
 }
 
 static int ffm_sink_can_handle(NSinkInterface *iface, NRequest *request)
@@ -570,11 +674,9 @@ static int ffm_sink_prepare(NSinkInterface *iface, NRequest *request)
 
 	/* creating copy of the data as we need to alter it for this event */
 	copy = g_new(struct ffm_effect_data, 1);
-	copy->id = data->id;
-	copy->repeat = data->repeat;
-	copy->iface = iface;
+	memcpy(copy, data, sizeof(struct ffm_effect_data));
 	copy->request = request;
-	copy->playback_time = data->playback_time;
+	copy->iface = iface;
 
 	repeat = n_proplist_get_bool (props, FFM_SOUND_REPEAT_KEY);
 	playback_time = n_proplist_get_uint (props, FFM_HAPTIC_DURATION_KEY);
@@ -585,7 +687,9 @@ static int ffm_sink_prepare(NSinkInterface *iface, NRequest *request)
 		 * keep repeating them until timer runs out and effect ends.
 		 */
 		copy->repeat = INT32_MAX; /* repeat to "infinity" */
-		copy->playback_time = playback_time;
+		if (!copy->playback_time && playback_time) {
+			copy->playback_time = playback_time;
+		};
 	}
 
 	N_DEBUG (LOG_CAT "prep effect %s, repeat %d times, duration of %d ms",
@@ -666,7 +770,7 @@ N_PLUGIN_LOAD(plugin)
 	};
 
 	/* Checking if there is a device, no point in loading plugin if not..*/
-	device_fd = ffmemless_evdev_file_search();
+	device_fd = ffmemless_evdev_file_search(ffm.features);
 	if (device_fd < 0) {
 		N_DEBUG (LOG_CAT "No force feedback device, stopping plugin");
 		return FALSE;
