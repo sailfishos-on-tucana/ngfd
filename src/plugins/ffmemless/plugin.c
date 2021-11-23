@@ -488,9 +488,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 		}
 		/* If the id was -1, kernel has updated it with valid value */
 		data->id = ff.id;
-#ifdef CACHE_EFFECTS
-		memcpy(&data->cached_effect, &ff, sizeof(ff));
-#endif
+
 		/* Calculate the playback time */
 		if (ff.type == FF_PERIODIC && ff.u.periodic.waveform == FF_CUSTOM) {
 			data->playback_time = ff.u.periodic.custom_data[1] * 1000
@@ -501,6 +499,10 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			data->playback_time = data->repeat *
 				(ff.replay.delay + ff.replay.length);
 		}
+
+#ifdef CACHE_EFFECTS
+		memcpy(&data->cached_effect, &ff, sizeof(ff));
+#endif
 
 		N_DEBUG (LOG_CAT "Created effect %s with id %d", key, data->id);
 		N_DEBUG (LOG_CAT "Parameters:\n"
