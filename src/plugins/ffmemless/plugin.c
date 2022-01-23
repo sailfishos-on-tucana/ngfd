@@ -37,6 +37,7 @@
 #define FFM_SYSTEM_CONFIG_KEY	"system_effects_env"
 #define FFM_DEVFILE_KEY		"device_file_path"
 #define FFM_EFFECTLIST_KEY	"supported_effects"
+#define FFM_CACHE_EFFECTS_KEY	"cache_effects"
 #define FFM_SOUND_REPEAT_KEY	"sound.repeat"
 #define FFM_HAPTIC_DURATION_KEY	"haptic.duration"
 #define FFM_MAX_PARAM_LEN	80
@@ -49,7 +50,6 @@
 // constant
 #define NGF_DEFAULT_LEVEL 0x5FFF
 
-#define CACHE_EFFECTS
 #define CUSTOM_DATA_LEN 3
 
 N_PLUGIN_NAME(FFM_PLUGIN_NAME)
@@ -64,9 +64,7 @@ struct ffm_effect_data {
 	guint playback_time;
 	int poll_id;
 	int16_t customEffectId;
-#ifdef CACHE_EFFECTS
 	struct ff_effect cached_effect;
-#endif
 };
 
 static struct ffm_data {
@@ -74,6 +72,7 @@ static struct ffm_data {
 	const NProplist *ngfd_props;
 	NProplist *sys_props;
 	GHashTable	*effects;
+	gboolean cache_effects;
 	unsigned long features[4];
 } ffm;
 
@@ -280,9 +279,9 @@ static int ffm_setup_default_effect(GHashTable *effects, int dev_fd)
 		ff.u.rumble.strong_magnitude = NGF_DEFAULT_RMAGNITUDE;
 		ff.u.rumble.weak_magnitude = NGF_DEFAULT_RMAGNITUDE;
 	}
-#ifdef CACHE_EFFECTS
-	memcpy(&data->cached_effect, &ff, sizeof(ff));
-#endif
+	if (ffm.cache_effects) {
+		memcpy(&data->cached_effect, &ff, sizeof(ff));
+	}
 	if (ffmemless_upload_effect(&ff, dev_fd)) {
 		N_DEBUG (LOG_CAT "%s effect load failed", N_HAPTIC_EFFECT_DEFAULT);
 		return -1;
@@ -502,9 +501,9 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 				(ff.replay.delay + ff.replay.length);
 		}
 
-#ifdef CACHE_EFFECTS
-		memcpy(&data->cached_effect, &ff, sizeof(ff));
-#endif
+		if (ffm.cache_effects) {
+			memcpy(&data->cached_effect, &ff, sizeof(ff));
+		}
 
 		N_DEBUG (LOG_CAT "Created effect %s with id %d", key, data->id);
 		N_DEBUG (LOG_CAT "Parameters:\n"
@@ -554,9 +553,9 @@ gboolean ffm_playback_done(gpointer userdata)
 
 	N_DEBUG (LOG_CAT "Effect id %d completed", data->id);
 
-#ifdef CACHE_EFFECTS
-	ffmemless_erase_effect(data->cached_effect.id, ffm.dev_file);
-#endif
+	if (ffm.cache_effects) {
+		ffmemless_erase_effect(data->cached_effect.id, ffm.dev_file);
+	}
 	data->poll_id = 0;
 	n_sink_interface_complete(data->iface, data->request);
 	return FALSE;
@@ -579,33 +578,32 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 		N_DEBUG (LOG_CAT "Stopping playback %d", data->id);
 	}
 
-#ifdef CACHE_EFFECTS
-	int16_t custom_data[CUSTOM_DATA_LEN] = {0, 0, 0};
-	if (play) {
-		data->cached_effect.id = -1;
-		if (data->cached_effect.type == FF_PERIODIC) {
-			custom_data[0] = data->customEffectId;
-			data->cached_effect.u.periodic.custom_data = custom_data;
-		}
-		if (ffmemless_upload_effect(&data->cached_effect, ffm.dev_file)) {
-			N_DEBUG (LOG_CAT "%d effect re-load failed", data->id);
-			if (data->poll_id) {
-				g_source_remove (data->poll_id);
-				data->poll_id = 0;
+	if (ffm.cache_effects) {
+		int16_t custom_data[CUSTOM_DATA_LEN] = {0, 0, 0};
+		if (play) {
+			data->cached_effect.id = -1;
+			if (data->cached_effect.type == FF_PERIODIC) {
+				custom_data[0] = data->customEffectId;
+				data->cached_effect.u.periodic.custom_data = custom_data;
 			}
+			if (ffmemless_upload_effect(&data->cached_effect, ffm.dev_file)) {
+				N_DEBUG (LOG_CAT "%d effect re-load failed", data->id);
+				if (data->poll_id) {
+					g_source_remove (data->poll_id);
+					data->poll_id = 0;
+				}
+				return FALSE;
+			} 
+		}
+
+		if (ffmemless_play(data->cached_effect.id, ffm.dev_file, play))
 			return FALSE;
-		} 
+		return TRUE;
+	} else {
+		if (ffmemless_play(data->id, ffm.dev_file, play))
+			return FALSE;
+		return TRUE;
 	}
-
-	if (ffmemless_play(data->cached_effect.id, ffm.dev_file, play))
-		return FALSE;
-	return TRUE;
-#else
-
-	if (ffmemless_play(data->id, ffm.dev_file, play))
-		return FALSE;
-	return TRUE;
-#endif
 }
 
 static void ffm_sink_shutdown(NSinkInterface *iface)
@@ -626,6 +624,8 @@ static int ffm_sink_initialize(NSinkInterface *iface)
 
 	ffm.effects = ffm_new_effect_list(n_proplist_get_string(ffm.ngfd_props,
 							FFM_EFFECTLIST_KEY));
+	ffm.cache_effects = !g_strcmp0(n_proplist_get_string(ffm.ngfd_props, FFM_CACHE_EFFECTS_KEY), "true");
+	N_DEBUG (LOG_CAT "Caching effects: %d", ffm.cache_effects);
 
 	if (ffm_setup_default_effect(ffm.effects, ffm.dev_file)) {
 		N_ERROR (LOG_CAT "Could not load default fall-back effect");
