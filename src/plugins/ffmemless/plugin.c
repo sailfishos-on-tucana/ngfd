@@ -434,11 +434,16 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 				ff.u.periodic.waveform = FF_SINE;
 
 			if (ff.u.periodic.waveform == FF_CUSTOM) {
+				// TODO: break 1
+				N_WARNING (LOG_CAT "Value of customEffectId: %d", data->customEffectId);
+
 				data->customEffectId = ffm_get_int_value(props,
 					key, "_CUSTOM", 0, UINT16_MAX);
 				int16_t custom_data[CUSTOM_DATA_LEN] = {data->customEffectId};
 				ff.u.periodic.custom_data = custom_data;
 				ff.u.periodic.custom_len = CUSTOM_DATA_LEN;
+				// TODO: check dis
+				//ff.u.periodic.custom_len = sizeof(int16_t) * CUSTOM_DATA_LEN;
 			}
 
 			ff.u.periodic.period = ffm_get_int_value(props,
@@ -581,6 +586,8 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 	if (play) {
 		data->cached_effect.id = -1;
 		if (data->cached_effect.type == FF_PERIODIC) {
+			// TODO: break 3
+			N_DEBUG (LOG_CAT "customEffectID again: %d", data->customEffectId);
 			int16_t custom_data[CUSTOM_DATA_LEN] = {data->customEffectId};
 			data->cached_effect.u.periodic.custom_data = custom_data;
 		}
@@ -676,9 +683,35 @@ static int ffm_sink_prepare(NSinkInterface *iface, NRequest *request)
 
 	/* creating copy of the data as we need to alter it for this event */
 	copy = g_new(struct ffm_effect_data, 1);
+	// TODO: break 2
+	// data print:
+	N_WARNING (LOG_CAT "data request: %d", data->request);
+	N_WARNING (LOG_CAT "data iface: %d", data->iface);
+	N_WARNING (LOG_CAT "data id: %d", data->id);
+	N_WARNING (LOG_CAT "data repeat: %d", data->repeat);
+	N_WARNING (LOG_CAT "data playback time: %d", data->playback_time);
+	N_WARNING (LOG_CAT "data poll id: %d", data->poll_id);
+	N_WARNING (LOG_CAT "data customeffectid: %d", data->customEffectId);
+
+	// copy print:
+	N_WARNING (LOG_CAT "copy request: %d", copy->request);
+	N_WARNING (LOG_CAT "copy iface: %d", copy->iface);
+	N_WARNING (LOG_CAT "copy id: %d", copy->id);
+	N_WARNING (LOG_CAT "copy repeat: %d", copy->repeat);
+	N_WARNING (LOG_CAT "copy playback time: %d", copy->playback_time);
+	N_WARNING (LOG_CAT "copy poll id: %d", copy->poll_id);
+	N_WARNING (LOG_CAT "copy customeffectid: %d", copy->customEffectId);
+        // TODO: dunno
+//#ifdef CACHE_EFFECTS
+//	struct ff_effect cached_effect;
+//#endif
 	memcpy(copy, data, sizeof(struct ffm_effect_data));
 	copy->request = request;
 	copy->iface = iface;
+	N_WARNING (LOG_CAT "copy request number 2: %d", copy->request);
+	N_WARNING (LOG_CAT "copy iface number 2: %d", copy->iface);
+	N_WARNING (LOG_CAT "request number 2: %d", request);
+	N_WARNING (LOG_CAT "iface number 2: %d", iface);
 
 	repeat = n_proplist_get_bool (props, FFM_SOUND_REPEAT_KEY);
 	playback_time = n_proplist_get_uint (props, FFM_HAPTIC_DURATION_KEY);
