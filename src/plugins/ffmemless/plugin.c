@@ -305,6 +305,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 	struct ffm_effect_data *data;
 	GHashTableIter iter;
 
+
 	if(!effects || !props) {
 		N_WARNING (LOG_CAT "ffm_setup_effects: invalid parameters");
 		return -1;
@@ -321,6 +322,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 	while (g_hash_table_iter_next(&iter, (gpointer) &key,
 							(gpointer) &data)) {
 		memset(&ff, 0, sizeof(struct ff_effect));
+		int16_t custom_data[CUSTOM_DATA_LEN] = {0, 0, 0};
 		N_DEBUG (LOG_CAT "got key %s, id %d", key, data->id);
 
 		value = ffm_get_str_value(props, key, "_TYPE");
@@ -436,7 +438,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			if (ff.u.periodic.waveform == FF_CUSTOM) {
 				data->customEffectId = ffm_get_int_value(props,
 					key, "_CUSTOM", 0, UINT16_MAX);
-				int16_t custom_data[CUSTOM_DATA_LEN] = {data->customEffectId};
+				custom_data[0] = data->customEffectId;
 				ff.u.periodic.custom_data = custom_data;
 				ff.u.periodic.custom_len = CUSTOM_DATA_LEN;
 			}
@@ -578,10 +580,11 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 	}
 
 #ifdef CACHE_EFFECTS
+	int16_t custom_data[CUSTOM_DATA_LEN] = {0, 0, 0};
 	if (play) {
 		data->cached_effect.id = -1;
 		if (data->cached_effect.type == FF_PERIODIC) {
-			int16_t custom_data[CUSTOM_DATA_LEN] = {data->customEffectId};
+			custom_data[0] = data->customEffectId;
 			data->cached_effect.u.periodic.custom_data = custom_data;
 		}
 		if (ffmemless_upload_effect(&data->cached_effect, ffm.dev_file)) {
