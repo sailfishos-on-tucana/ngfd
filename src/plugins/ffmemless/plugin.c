@@ -441,6 +441,9 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 					key, "_CUSTOM", 0, UINT16_MAX);
 				int16_t custom_data[CUSTOM_DATA_LEN] = {data->customEffectId};
 				ff.u.periodic.custom_data = custom_data;
+				N_DEBUG (LOG_CAT "Value of data: 0: %d, 1: %d, 2: %d", ff.u.periodic.custom_data[0], 
+					ff.u.periodic.custom_data[1],
+					ff.u.periodic.custom_data[2]);
 				ff.u.periodic.custom_len = CUSTOM_DATA_LEN;
 				// TODO: check dis
 				//ff.u.periodic.custom_len = sizeof(int16_t) * CUSTOM_DATA_LEN;
@@ -590,6 +593,9 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 			N_DEBUG (LOG_CAT "customEffectID again: %d", data->customEffectId);
 			int16_t custom_data[CUSTOM_DATA_LEN] = {data->customEffectId};
 			data->cached_effect.u.periodic.custom_data = custom_data;
+			N_DEBUG (LOG_CAT "data again: 0: %d, 1: %d, 2: %d", data->cached_effect.u.periodic.custom_data[0], 
+				data->cached_effect.u.periodic.custom_data[1],
+				data->cached_effect.u.periodic.custom_data[2]);
 		}
 		if (ffmemless_upload_effect(&data->cached_effect, ffm.dev_file)) {
 			N_DEBUG (LOG_CAT "%d effect re-load failed", data->id);
