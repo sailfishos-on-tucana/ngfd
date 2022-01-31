@@ -75,6 +75,7 @@ static struct ffm_data {
 	NProplist *sys_props;
 	GHashTable	*effects;
 	unsigned long features[4];
+	int lastEffectId;
 } ffm;
 
 static int ffm_setup_device(const NProplist *props, int *dev_fd)
@@ -346,15 +347,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			continue;
 		}
 
-		if (data->id != -1) {
-			if(ffmemless_erase_effect(data->id, ffm.dev_file)) {
-				N_WARNING (LOG_CAT "Failed to remove id %d",
-								data->id);
-				continue;
-			}
-			data->id = -1;
-		}
-		ff.id = data->id;
+		ff.id = -1;
 
 		N_DEBUG (LOG_CAT "Creating / updating effect %s", key);
 
@@ -490,6 +483,7 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 		}
 		/* If the id was -1, kernel has updated it with valid value */
 		data->id = ff.id;
+		ffm.lastEffectId = ff.id;
 
 		/* Calculate the playback time */
 		if (ff.type == FF_PERIODIC && ff.u.periodic.waveform == FF_CUSTOM) {
@@ -554,9 +548,6 @@ gboolean ffm_playback_done(gpointer userdata)
 
 	N_DEBUG (LOG_CAT "Effect id %d completed", data->id);
 
-#ifdef CACHE_EFFECTS
-	ffmemless_erase_effect(data->cached_effect.id, ffm.dev_file);
-#endif
 	data->poll_id = 0;
 	n_sink_interface_complete(data->iface, data->request);
 	return FALSE;
@@ -587,6 +578,10 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 			custom_data[0] = data->customEffectId;
 			data->cached_effect.u.periodic.custom_data = custom_data;
 		}
+		if (ffm.lastEffectId != -1) {
+			N_DEBUG (LOG_CAT "Erasing previous effect uploaded %d", ffm.lastEffectId);
+			ffmemless_erase_effect(ffm.lastEffectId, ffm.dev_file);
+		}
 		if (ffmemless_upload_effect(&data->cached_effect, ffm.dev_file)) {
 			N_DEBUG (LOG_CAT "%d effect re-load failed", data->id);
 			if (data->poll_id) {
@@ -594,7 +589,8 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 				data->poll_id = 0;
 			}
 			return FALSE;
-		} 
+		}
+		ffm.lastEffectId = data->cached_effect.id;
 	}
 
 	if (ffmemless_play(data->cached_effect.id, ffm.dev_file, play))
@@ -626,6 +622,7 @@ static int ffm_sink_initialize(NSinkInterface *iface)
 
 	ffm.effects = ffm_new_effect_list(n_proplist_get_string(ffm.ngfd_props,
 							FFM_EFFECTLIST_KEY));
+	ffm.lastEffectId = -1;
 
 	if (ffm_setup_default_effect(ffm.effects, ffm.dev_file)) {
 		N_ERROR (LOG_CAT "Could not load default fall-back effect");
