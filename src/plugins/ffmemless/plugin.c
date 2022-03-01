@@ -107,7 +107,6 @@ static int ffm_setup_device(const NProplist *props, int *dev_fd)
 static void ffm_close_device(int fd)
 {
 	ffmemless_evdev_file_close(fd);
-
 }
 
 /* Fetches string value from props with full key combined from prefix and key */
@@ -304,7 +303,6 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 	struct ffm_effect_data *data;
 	GHashTableIter iter;
 
-
 	if(!effects || !props) {
 		N_WARNING (LOG_CAT "ffm_setup_effects: invalid parameters");
 		return -1;
@@ -418,7 +416,6 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 			ff.u.constant.envelope.fade_level = ffm_get_int_value(
 				props, key, "_FLEVEL",
 				0, UINT16_MAX);
-
 		} else if (ff.type == FF_PERIODIC) {
 			N_DEBUG (LOG_CAT "periodic effect");
 			ff.type = FF_PERIODIC;
@@ -489,7 +486,6 @@ static int ffm_setup_effects(const NProplist *props, GHashTable *effects)
 		}
 		/* If the id was -1, kernel has updated it with valid value */
 		data->id = ff.id;
-
 		/* Calculate the playback time */
 		if (ff.type == FF_PERIODIC && ff.u.periodic.waveform == FF_CUSTOM) {
 			data->playback_time = ff.u.periodic.custom_data[1] * 1000
