@@ -266,7 +266,7 @@ static int ffm_setup_default_effect(GHashTable *effects, int dev_fd)
 	// drivers which use FF_PERIODIC only with FF_CUSTOM waveform..
 	// https://github.com/torvalds/linux/blob/master/drivers/input/ff-core.c#L350
 	if (ffmemless_has_feature(FF_CONSTANT, ffm.features)) {
-		N_DEBUG (LOG_CAT "Using constant default effect, rumble is %d", 
+		N_DEBUG (LOG_CAT "Using constant default effect, rumble is %d",
 			(ffmemless_has_feature(FF_RUMBLE, ffm.features)));
 		ff.type = FF_CONSTANT;
 		ff.replay.length = NGF_DEFAULT_DURATION;
@@ -564,7 +564,7 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 	/* if there is playback time set, this is single shot effect */
 	if (play) {
 		if (data->playback_time) {
-			N_DEBUG (LOG_CAT "setting up completion timer");
+			N_DEBUG (LOG_CAT "setting up completion timer to %d + 20", data->playback_time);
 			data->poll_id = g_timeout_add(data->playback_time + 20,
 						ffm_playback_done, data);
 		}
@@ -589,7 +589,7 @@ static int ffm_play(struct ffm_effect_data *data, int play)
 					data->poll_id = 0;
 				}
 				return FALSE;
-			} 
+			}
 		}
 
 		if (ffmemless_play(data->cached_effect.id, ffm.dev_file, play))
