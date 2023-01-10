@@ -19,7 +19,7 @@ AM_PROG_LIBTOOL
 
 # Enable extra GCC flags.
 if test "$GCC" = "yes"; then
-    CFLAGS="$CFLAGS -Wall -Wextra"
+    CFLAGS="$CFLAGS -Wall -Wextra -fstack-protector-all -fsanitize=address -fno-omit-frame-pointer"
 fi
 
 # Checks for header files.
